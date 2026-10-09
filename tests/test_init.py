@@ -1,5 +1,6 @@
 """Tests for __init__.py (services, setup, unload)."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,6 +20,7 @@ from custom_components.myhondaplus import (
     _consolidate_duplicate_entries,
     _get_coordinator,
     _register_services,
+    _update_device_models,
     async_migrate_entry,
     async_reload_entry,
     async_setup,
@@ -28,6 +30,7 @@ from custom_components.myhondaplus.const import (
     CONF_ACCESS_TOKEN,
     CONF_CAR_REFRESH_INTERVAL,
     CONF_FUEL_TYPE,
+    CONF_MODEL,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
     CONF_USER_ID,
@@ -48,23 +51,82 @@ def mock_hass_with_services():
     return hass
 
 
+class _SingleOwnerDevice(SimpleNamespace):
+    @property
+    def config_entries(self):
+        raise AssertionError("Do not read deprecated config_entries on ordinary devices")
+
+
 class TestGetCoordinator:
-    def test_returns_coordinator_via_device(self, mock_coordinator, mock_runtime_data):
+    @pytest.mark.parametrize("device_kind", ["single_owner", "legacy", "composite"])
+    def test_returns_coordinator_via_device(
+        self, mock_coordinator, mock_runtime_data, device_kind
+    ):
         hass = MagicMock()
-        device = MagicMock()
-        device.identifiers = {(DOMAIN, MOCK_VIN)}
+        if device_kind == "single_owner":
+            device = _SingleOwnerDevice(
+                identifiers={(DOMAIN, MOCK_VIN)},
+                config_entry_id="entry_1",
+                is_composite_device=False,
+            )
+        else:
+            device = SimpleNamespace(
+                identifiers={(DOMAIN, MOCK_VIN)}, config_entries={"entry_1"}
+            )
+            if device_kind == "composite":
+                device.config_entry_id = "other_entry"
+                device.is_composite_device = True
+                device.config_entries.add("other_entry")
         entry = MagicMock()
         entry.domain = DOMAIN
         entry.state = ConfigEntryState.LOADED
         entry.runtime_data = mock_runtime_data
-        device.config_entries = {"entry_1"}
-        hass.config_entries.async_get_entry.return_value = entry
+        other_entry = SimpleNamespace(domain="other_domain")
+        hass.config_entries.async_get_entry.side_effect = (
+            lambda entry_id: entry if entry_id == "entry_1" else other_entry
+        )
 
         with patch("custom_components.myhondaplus.dr") as mock_dr:
             mock_dr.async_get.return_value.async_get.return_value = device
             result = _get_coordinator(hass, MagicMock(data={ATTR_DEVICE: "device_1"}))
 
         assert result is mock_coordinator
+        hass.config_entries.async_get_entry.assert_any_call("entry_1")
+
+    @pytest.mark.parametrize(
+        "entry_status", ["missing", "other_domain", "unloaded", "no_runtime", "no_vehicle"]
+    )
+    def test_rejects_unavailable_owner(self, entry_status, mock_runtime_data):
+        hass = MagicMock()
+        device = _SingleOwnerDevice(
+            identifiers={(DOMAIN, MOCK_VIN)},
+            config_entry_id="entry_1",
+            is_composite_device=False,
+        )
+        entry = SimpleNamespace(
+            domain=DOMAIN,
+            state=ConfigEntryState.LOADED,
+            runtime_data=mock_runtime_data,
+        )
+        if entry_status == "missing":
+            entry = None
+        elif entry_status == "other_domain":
+            entry.domain = "other_domain"
+        elif entry_status == "unloaded":
+            entry.state = ConfigEntryState.NOT_LOADED
+        elif entry_status == "no_runtime":
+            del entry.runtime_data
+        elif entry_status == "no_vehicle":
+            entry.runtime_data = SimpleNamespace(vehicles={})
+        hass.config_entries.async_get_entry.return_value = entry
+
+        with patch("custom_components.myhondaplus.dr") as mock_dr:
+            mock_dr.async_get.return_value.async_get.return_value = device
+            with pytest.raises(ServiceValidationError) as exc_info:
+                _get_coordinator(hass, MagicMock(data={ATTR_DEVICE: "device_1"}))
+
+        assert exc_info.value.translation_key == "device_not_found"
+        hass.config_entries.async_get_entry.assert_called_once_with("entry_1")
 
     def test_raises_when_no_device(self):
         hass = MagicMock()
@@ -79,6 +141,75 @@ class TestGetCoordinator:
             with pytest.raises(ServiceValidationError) as exc_info:
                 _get_coordinator(hass, MagicMock(data={ATTR_DEVICE: "nonexistent"}))
         assert exc_info.value.translation_key == "device_not_found"
+
+
+class TestUpdateDeviceModels:
+    @pytest.mark.parametrize("modern_api", [True, False])
+    @pytest.mark.parametrize("device_model", [None, "Old model", "Honda e", "missing"])
+    def test_updates_only_changed_models(self, modern_api, device_model):
+        hass = MagicMock()
+        entry = SimpleNamespace(
+            entry_id="entry_1",
+            data={CONF_VEHICLES: [{CONF_VIN: MOCK_VIN, CONF_MODEL: "Honda e"}]},
+        )
+        lookup_method = (
+            "async_get_device_by_identifier" if modern_api else "async_get_device"
+        )
+        registry = MagicMock(spec=[lookup_method, "async_update_device"])
+        lookup = getattr(registry, lookup_method)
+        lookup.return_value = (
+            None
+            if device_model == "missing"
+            else SimpleNamespace(id="device_1", model=device_model)
+        )
+
+        with patch("custom_components.myhondaplus.dr.async_get", return_value=registry):
+            _update_device_models(hass, entry)
+
+        if modern_api:
+            lookup.assert_called_once_with((DOMAIN, MOCK_VIN), "entry_1")
+        else:
+            lookup.assert_called_once_with(identifiers={(DOMAIN, MOCK_VIN)})
+        if device_model in ("Honda e", "missing"):
+            registry.async_update_device.assert_not_called()
+        else:
+            registry.async_update_device.assert_called_once_with("device_1", model="Honda e")
+
+    def test_same_identifier_in_another_entry_is_not_updated(self):
+        hass = MagicMock()
+        entry = SimpleNamespace(
+            entry_id="entry_1",
+            data={CONF_VEHICLES: [{CONF_VIN: MOCK_VIN, CONF_MODEL: "Honda e"}]},
+        )
+        devices = {
+            ((DOMAIN, MOCK_VIN), "entry_1"): SimpleNamespace(id="own_device", model=None),
+            ((DOMAIN, MOCK_VIN), "entry_2"): SimpleNamespace(id="other_device", model=None),
+        }
+        registry = MagicMock(
+            spec=["async_get_device_by_identifier", "async_update_device"]
+        )
+        registry.async_get_device_by_identifier.side_effect = (
+            lambda identifier, entry_id: devices.get((identifier, entry_id))
+        )
+
+        with patch("custom_components.myhondaplus.dr.async_get", return_value=registry):
+            _update_device_models(hass, entry)
+
+        registry.async_update_device.assert_called_once_with("own_device", model="Honda e")
+
+    def test_skips_vehicles_without_model(self):
+        hass = MagicMock()
+        entry = SimpleNamespace(
+            entry_id="entry_1", data={CONF_VEHICLES: [{CONF_VIN: MOCK_VIN}]}
+        )
+        registry = MagicMock()
+
+        with patch("custom_components.myhondaplus.dr.async_get", return_value=registry):
+            _update_device_models(hass, entry)
+
+        registry.async_get_device_by_identifier.assert_not_called()
+        registry.async_get_device.assert_not_called()
+        registry.async_update_device.assert_not_called()
 
 
 class TestRegisterServices:
