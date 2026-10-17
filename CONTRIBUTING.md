@@ -126,4 +126,5 @@ Branch protection requires all four checks (Lint / Tests / Hassfest / HACS Valid
 3. Verify all CI checks pass.
 4. PR → merge to `main` (merge commit).
 5. Tag `X.Y.Z` on the merge commit. Push.
-6. `gh release create X.Y.Z` — HACS picks up the new release automatically.
+6. `gh release create X.Y.Z` — HACS picks up the new release automatically. End the release body with `### Thanks` for the people who authored or took part in the PRs it ships.
+7. Rename the `Next release` milestone to `X.Y.Z`, close it, and open a new `Next release` (milestone titles are unique, so the rename comes first).
