@@ -526,9 +526,13 @@ def _update_device_models(
         model = v.get(CONF_MODEL, "")
         if not model:
             continue
-        device = device_registry.async_get_device(
-            identifiers={(DOMAIN, v[CONF_VIN])},
-        )
+        if lookup := getattr(device_registry, "async_get_device_by_identifier", None):
+            device = lookup((DOMAIN, v[CONF_VIN]), entry.entry_id)
+        else:
+            # Home Assistant before 2026.8 has globally unique identifiers.
+            device = device_registry.async_get_device(
+                identifiers={(DOMAIN, v[CONF_VIN])},
+            )
         if device and device.model != model:
             device_registry.async_update_device(device.id, model=model)
 
@@ -613,8 +617,16 @@ def _get_coordinator(
             translation_key="device_not_found",
         )
 
-    # Find the config entry that owns this vehicle
-    for entry_id in device.config_entries:
+    # Ordinary devices have one owner. Composite IDs stored in older actions
+    # still represent multiple entries; their config_entries is not deprecated.
+    if hasattr(device, "config_entry_id") and not getattr(
+        device, "is_composite_device", False
+    ):
+        entry_ids = {device.config_entry_id}
+    else:
+        # Also supports Home Assistant before the single-owner registry API.
+        entry_ids = device.config_entries
+    for entry_id in entry_ids:
         entry = hass.config_entries.async_get_entry(entry_id)
         if (
             entry
