@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from custom_components.myhondaplus.sensor import (
     SENSOR_DESCRIPTIONS,
     TRIP_SENSOR_DESCRIPTIONS,
@@ -63,6 +65,49 @@ class TestHondaSensor:
         mock_coordinator.data.warning_lamps = []
         sensor = make_sensor(mock_coordinator, "warning_lamps")
         assert sensor.native_value == "none"
+
+    @pytest.mark.parametrize("length", [255, 256])
+    def test_warning_state_length_boundary(self, mock_coordinator, length):
+        indicators = ["x" * length]
+        mock_coordinator.data.warning_lamps = indicators
+        sensor = make_sensor(mock_coordinator, "warning_lamps")
+        assert sensor.native_value == (indicators[0] if length == 255 else "1")
+        assert sensor.extra_state_attributes == {"indicators": indicators}
+
+    def test_many_warning_indicators_are_preserved(self, mock_coordinator):
+        indicators = [
+            f"MeterIndicator_{name}"
+            for name in (
+                "TPMS_DWS", "Engine_Failure", "LKAS_Amber", "CMBS", "RDM", "EPS",
+                "BATT", "ACC_Amber", "Seatbelt", "Brake_Amber", "VSA_Off", "VSA_Act",
+                "Brake_Red", "ABS", "SRS", "Safety_Failure", "PowerSystem_Failure",
+            )
+        ]
+        mock_coordinator.data.warning_lamps = indicators
+        sensor = make_sensor(mock_coordinator, "warning_lamps")
+        assert len(", ".join(indicators)) > 255
+        assert sensor.native_value == "17"
+        assert sensor.extra_state_attributes == {"indicators": indicators}
+
+        mock_coordinator.data.warning_lamps = ["MeterIndicator_Seatbelt"]
+        assert sensor.native_value == "MeterIndicator_Seatbelt"
+        assert sensor.extra_state_attributes == {"indicators": ["MeterIndicator_Seatbelt"]}
+
+        mock_coordinator.data.warning_lamps = []
+        assert sensor.native_value == "none"
+        assert sensor.extra_state_attributes == {"indicators": []}
+
+    def test_short_warning_list_has_indicators_attribute(self, mock_coordinator):
+        mock_coordinator.data.warning_lamps = ["oil", "tire"]
+        sensor = make_sensor(mock_coordinator, "warning_lamps")
+        assert sensor.native_value == "oil, tire"
+        assert sensor.extra_state_attributes == {"indicators": ["oil", "tire"]}
+
+    def test_missing_warning_list_has_no_attributes(self, mock_coordinator):
+        mock_coordinator.data.warning_lamps = None
+        sensor = make_sensor(mock_coordinator, "warning_lamps")
+        assert sensor.native_value is None
+        assert sensor.extra_state_attributes is None
 
     def test_all_sensor_descriptions_have_valid_keys(self, mock_coordinator):
         """Ensure every sensor description key exists in the mock dashboard data."""
