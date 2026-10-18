@@ -266,8 +266,14 @@ All vehicles on your account are automatically detected and added as separate de
 
 ## Related projects
 
-- [pymyhondaplus](https://github.com/enricobattocchi/pymyhondaplus) — Python client library and CLI for the Honda Connect Europe API
-- [myhondaplus-desktop](https://github.com/enricobattocchi/myhondaplus-desktop) — Desktop GUI application
+- [pymyhondaplus](https://github.com/enricobattocchi/pymyhondaplus): Python client library and CLI for the Honda Connect Europe API
+- [myhondaplus-desktop](https://github.com/enricobattocchi/myhondaplus-desktop): Desktop GUI application
+
+### Community projects
+
+Third-party projects built on this integration. They're maintained by their own authors, not by this project; report issues in their repositories.
+
+- [myhondaplus-vehicle-card](https://github.com/Danieldiazi/myhondaplus-vehicle-card): Unofficial Lovelace card for My Honda+ vehicles in Home Assistant, with automatic entity discovery and HACS support
 
 ---
 
